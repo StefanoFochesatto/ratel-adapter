@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  Simple preCICE configuration for Ratel-Dummy coupling
+  
+  This config matches the original solverdummies/precice-config.xml
+  but adapted for Ratel-Dummy coupling.
+  
+  Coupling scheme: Serial-Explicit (simplest possible)
+  - SolverOne (Ratel) writes Data-One, reads Data-Two
+  - SolverTwo (Dummy) writes Data-Two, reads Data-One
+  
+  Note: The dummy solver expects specific data names "Data-One" and "Data-Two"
+  
+  Usage:
+    Terminal 1: ./ex02-quasistatic-precice -precice_config examples/precice-config-ratel-dummy.xml
+    Terminal 2: $PRECICE_DIR/examples/solverdummies/c/solverdummy \
+                 examples/precice-config-ratel-dummy.xml SolverTwo
+-->
+<precice-configuration>
+  <log>
+    <sink
+      type="stream"
+      output="stdout"
+      filter="%Severity% > debug"
+      format="preCICE:%ColorizedSeverity% %Message%"
+      enabled="true" />
+  </log>
+
+  <!-- Data definitions (must match what dummy solver expects) -->
+  <data:vector name="Data-One" />
+  <data:vector name="Data-Two" />
+
+  <!-- Mesh definitions -->
+  <mesh name="SolverOne-Mesh" dimensions="3">
+    <use-data name="Data-One" />
+    <use-data name="Data-Two" />
+  </mesh>
+
+  <mesh name="SolverTwo-Mesh" dimensions="3">
+    <use-data name="Data-One" />
+    <use-data name="Data-Two" />
+  </mesh>
+
+  <!-- Participants -->
+  <participant name="SolverOne">
+    <provide-mesh name="SolverOne-Mesh" />
+    <write-data name="Data-One" mesh="SolverOne-Mesh" />
+    <read-data name="Data-Two" mesh="SolverOne-Mesh" />
+  </participant>
+
+  <participant name="SolverTwo">
+    <receive-mesh name="SolverOne-Mesh" from="SolverOne" />
+    <provide-mesh name="SolverTwo-Mesh" />
+    <mapping:nearest-neighbor
+      direction="write"
+      from="SolverTwo-Mesh"
+      to="SolverOne-Mesh"
+      constraint="conservative" />
+    <mapping:nearest-neighbor
+      direction="read"
+      from="SolverOne-Mesh"
+      to="SolverTwo-Mesh"
+      constraint="consistent" />
+    <write-data name="Data-Two" mesh="SolverTwo-Mesh" />
+    <read-data name="Data-One" mesh="SolverTwo-Mesh" />
+  </participant>
+
+  <!-- Communication -->
+  <m2n:sockets acceptor="SolverOne" connector="SolverTwo" />
+
+  <!-- Coupling scheme: Simple serial-explicit (no iterations) -->
+  <coupling-scheme:serial-explicit>
+    <participants first="SolverOne" second="SolverTwo" />
+    <max-time-windows value="5" />
+    <time-window-size value="0.1" />
+    <exchange data="Data-One" mesh="SolverOne-Mesh" from="SolverOne" to="SolverTwo" />
+    <exchange data="Data-Two" mesh="SolverOne-Mesh" from="SolverTwo" to="SolverOne" />
+  </coupling-scheme:serial-explicit>
+</precice-configuration>
