@@ -54,7 +54,8 @@ typedef struct
   char config_file[256];
   /** @brief Name of coupling mesh in preCICE */
   char mesh_name[256];
-
+  /** @brief Name of coupling mesh in preCICE */
+  char mesh_couple[256];
   /** @brief Name of data to read from preCICE (e.g., "Force") */
   char read_data_name[256];
   /** @brief Name of data to write to preCICE (e.g., "Displacement") */

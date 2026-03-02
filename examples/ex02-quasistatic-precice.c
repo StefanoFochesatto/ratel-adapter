@@ -55,6 +55,12 @@ int main(int argc, char **argv) {
                                adapter_params.mesh_name,
                                adapter_params.mesh_name, 256, NULL));
 
+  /* Second mesh name (from other participant) */
+  strcpy(adapter_params.mesh_couple, "SolverTwo-Mesh");
+  PetscCall(PetscOptionsString(
+      "-precice_second_mesh", "Second preCICE mesh name (other participant)",
+      NULL, adapter_params.mesh_couple, adapter_params.mesh_couple, 256, NULL));
+
   strcpy(adapter_params.read_data_name, "Data-Two");
   PetscCall(PetscOptionsString(
       "-precice_read_data", "Data to read from preCICE", NULL,

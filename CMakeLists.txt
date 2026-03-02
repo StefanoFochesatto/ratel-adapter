@@ -134,7 +134,30 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/examples/ex02-quasistatic-precice.c)
     target_compile_options(ex02-quasistatic-precice PRIVATE -g -O0)
 endif()
 
+# Build ex03-dynamic-precice example
+if(EXISTS ${CMAKE_SOURCE_DIR}/examples/ex03-dynamic-precice.c)
+    add_executable(ex03-dynamic-precice examples/ex03-dynamic-precice.c)
 
+    target_include_directories(ex03-dynamic-precice PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${RATEL_INCLUDE_DIR}
+        ${PETSC_INCLUDE_DIRS}
+        ${PRECICE_INCLUDE_DIRS}
+    )
+
+    # Link in correct order: executable -> ratel-adapter -> ratel -> petsc -> precice -> mpi
+    target_link_libraries(ex03-dynamic-precice
+        ratel-adapter
+        ${RATEL_LIBRARY}
+        ${PETSC_LDFLAGS}
+        ${PRECICE_LIBRARIES}
+        MPI::MPI_C
+        MPI::MPI_CXX
+    )
+
+    # Set debug flags for development
+    target_compile_options(ex03-dynamic-precice PRIVATE -g -O0)
+endif()
 
 # Install rules
 include(GNUInstallDirs)

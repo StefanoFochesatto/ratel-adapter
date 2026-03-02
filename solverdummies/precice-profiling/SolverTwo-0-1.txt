@@ -1,0 +1,1 @@
+{"name":"SolverTwo","rank":0,"size":1,"unix_us":"1770232682631673","tinit":"2026-02-04T12:18:02.673","mode":"fundamental","compression":false,"file_version":2}

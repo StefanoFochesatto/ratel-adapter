@@ -13,7 +13,8 @@
  *
  * Algorithm:
  * 1. Get DMLabel by name
- * 2. Get stratum IS for label value
+ * 2. Get stratum IS for label value and intersec with height stratum for codim
+ * -1 entities
  * 3. For each face, get transitive closure to find vertices
  * 4. Filter for locally-owned vertices using DMPlexGetPointGlobal
  * 5. Extract coordinates from DM
@@ -27,26 +28,47 @@
  *
  * @return PetscErrorCode
  */
-PetscErrorCode RatelAdapterExtractBoundaryVertices(DM dm, const char* label_name,
-                                                   PetscInt label_value, PetscInt dim,
-                                                   PetscInt* n_vertices, PetscReal** vertex_coords,
-                                                   PetscInt** petsc_indices) {
+PetscErrorCode RatelAdapterExtractBoundaryVertices(
+    DM dm, const char *label_name, PetscInt label_value, PetscInt dim,
+    PetscInt *n_vertices, PetscReal **vertex_coords, PetscInt **petsc_indices) {
   PetscFunctionBeginUser;
 
   MPI_Comm comm;
-
   PetscCall(PetscObjectGetComm((PetscObject)dm, &comm));
 
   /* Get DMLabel */
   DMLabel label;
   PetscCall(DMGetLabel(dm, label_name, &label));
   if (!label) {
-    SETERRQ1(comm, PETSC_ERR_ARG_WRONGSTATE, "Label '%s' not found in DM", label_name);
+    SETERRQ1(comm, PETSC_ERR_ARG_WRONGSTATE, "Label '%s' not found in DM",
+             label_name);
   }
 
-  /* Get stratum (faces with matching label value) */
-  IS face_is;
-  PetscCall(DMLabelGetStratumIS(label, label_value, &face_is));
+  // Extract index set of faces with boundary_label value
+  // The following is to ensure that we are only looking at codim -1 entities,
+  // label might have other entitis marked and we will also want connectivity
+  // information as well. We can't assume label is complete
+
+  /* Get range for points with height 1 (faces(3d) or edges(2d)) */
+  PetscInt fStart, fEnd;
+  PetscCall(DMPlexGetHeightStratum(dm, 1, &fStart, &fEnd));
+
+  /* Create IS for all (codim -1) */
+  IS all_faces_is;
+  PetscCall(
+      ISCreateStride(PETSC_COMM_SELF, fEnd - fStart, fStart, 1, &all_faces_is));
+
+  /* Get IS for points with the label value */
+  IS label_is;
+  PetscCall(DMLabelGetStratumIS(label, label_value, &label_is));
+
+  /* Intersect to get only labeled faces */
+  IS face_is = NULL;
+  if (label_is) {
+    PetscCall(ISIntersect(label_is, all_faces_is, &face_is));
+    PetscCall(ISDestroy(&label_is));
+  }
+  PetscCall(ISDestroy(&all_faces_is));
 
   if (!face_is) {
     /* No faces with this label value */
@@ -58,7 +80,7 @@ PetscErrorCode RatelAdapterExtractBoundaryVertices(DM dm, const char* label_name
 
   /* Get face indices */
   PetscInt n_faces;
-  const PetscInt* faces;
+  const PetscInt *faces;
   PetscCall(ISGetLocalSize(face_is, &n_faces));
   PetscCall(ISGetIndices(face_is, &faces));
 
@@ -67,7 +89,7 @@ PetscErrorCode RatelAdapterExtractBoundaryVertices(DM dm, const char* label_name
   PetscCall(DMPlexGetDepthStratum(dm, 0, &v_start, &v_end));
 
   /* Temporary storage for vertex points */
-  PetscInt* temp_vertices;
+  PetscInt *temp_vertices;
   PetscInt max_vertices = n_faces * 10; /* Estimate: 10 vertices per face */
   PetscCall(PetscMalloc1(max_vertices, &temp_vertices));
   PetscInt vertex_count = 0;
@@ -81,11 +103,13 @@ PetscErrorCode RatelAdapterExtractBoundaryVertices(DM dm, const char* label_name
     PetscInt face = faces[f];
 
     /* Get closure of face (includes face, edges, vertices) */
-    PetscInt* closure = NULL;
+    PetscInt *closure = NULL;
     PetscInt closure_size;
-    PetscCall(DMPlexGetTransitiveClosure(dm, face, PETSC_TRUE, &closure_size, &closure));
+    PetscCall(DMPlexGetTransitiveClosure(dm, face, PETSC_TRUE, &closure_size,
+                                         &closure));
 
-    /* Iterate closure to find vertices */
+    /* Iterate closure to find vertices, iterate by 2 since closure is
+     * [point,orientation] pairs */
     for (PetscInt c = 0; c < closure_size * 2; c += 2) {
       PetscInt point = closure[c];
 
@@ -109,7 +133,8 @@ PetscErrorCode RatelAdapterExtractBoundaryVertices(DM dm, const char* label_name
             if (vertex_count >= max_vertices) {
               /* Resize */
               max_vertices *= 2;
-              PetscCall(PetscRealloc(max_vertices * sizeof(PetscInt), &temp_vertices));
+              PetscCall(PetscRealloc(max_vertices * sizeof(PetscInt),
+                                     &temp_vertices));
             }
             temp_vertices[vertex_count++] = point;
           }
@@ -117,7 +142,8 @@ PetscErrorCode RatelAdapterExtractBoundaryVertices(DM dm, const char* label_name
       }
     }
 
-    PetscCall(DMPlexRestoreTransitiveClosure(dm, face, PETSC_TRUE, &closure_size, &closure));
+    PetscCall(DMPlexRestoreTransitiveClosure(dm, face, PETSC_TRUE,
+                                             &closure_size, &closure));
   }
 
   PetscCall(ISRestoreIndices(face_is, &faces));
@@ -141,7 +167,7 @@ PetscErrorCode RatelAdapterExtractBoundaryVertices(DM dm, const char* label_name
   PetscCall(DMGetCoordinateSection(dm, &coord_section));
   PetscCall(DMGetCoordinatesLocal(dm, &coord_vec));
 
-  const PetscScalar* coords;
+  const PetscScalar *coords;
   PetscCall(VecGetArrayRead(coord_vec, &coords));
 
   for (PetscInt v = 0; v < vertex_count; v++) {

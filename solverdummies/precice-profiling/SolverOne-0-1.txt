@@ -1,0 +1,1 @@
+{"name":"SolverOne","rank":0,"size":1,"unix_us":"1770232653045750","tinit":"2026-02-04T12:17:33.750","mode":"fundamental","compression":false,"file_version":2}
