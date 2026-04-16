@@ -136,4 +136,33 @@ PetscCall(ISDestroy(&valueIS));
 PetscCall(PetscPrintf(PetscObjectComm((PetscObject)dm), "---------------------------\n"));
 PetscFunctionReturn(PETSC_SUCCESS);
 }
+
+/**
+ * @brief Prints the contents of a preCICE raw double buffer
+ *
+ * @param comm       MPI communicator (usually PETSC_COMM_SELF since vertices are local)
+ * @param name       A descriptive name for the output (e.g., "Read Buffer")
+ * @param n_vertices Number of interface vertices
+ * @param dim        Spatial dimension
+ * @param buffer     The raw data array [x0, y0, z0, x1, y1, z1, ...]
+ */
+static inline PetscErrorCode PetscDebugPrintPreciceBuffer(MPI_Comm comm, const char *name, 
+                                                          PetscInt n_vertices, PetscInt dim, 
+                                                          const PetscReal *buffer) {
+    PetscFunctionBegin;
+    PetscCall(PetscPrintf(comm, "--- preCICE Buffer: %s ---\n", name));
+    for (PetscInt i = 0; i < n_vertices; ++i) {
+        PetscCall(PetscPrintf(comm, "  Vertex %" PetscInt_FMT ": [", i));
+        for (PetscInt d = 0; d < dim; ++d) {
+            PetscCall(PetscPrintf(comm, "%g", (double)buffer[i * dim + d]));
+            if (d < dim - 1) {
+                PetscCall(PetscPrintf(comm, ", "));
+            }
+        }
+        PetscCall(PetscPrintf(comm, "]\n"));
+    }
+    PetscCall(PetscPrintf(comm, "---------------------------\n"));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
 #endif /* PETSC_DEBUG_H */

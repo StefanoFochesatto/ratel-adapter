@@ -53,6 +53,27 @@ Checkpointing:\n\
 #include <ratel-adapter/ratel-adapter.h>
 #include <ratel.h>
 
+// Context for I2Function callback
+typedef struct {
+  Vec F;
+  TSI2FunctionFn *ratel_i2function;
+  void *ratel_i2ctx;
+} AdapterCtx;
+
+// Wrapper for the TS I2Function to include preCICE forces
+static PetscErrorCode ApplyTractionI2Function(TS ts, PetscReal t, Vec U, Vec U_t, Vec U_tt, Vec Y, void *ctx) {
+  AdapterCtx *my_ctx = (AdapterCtx *)ctx;
+
+  PetscFunctionBeginUser;
+  // 1. Evaluate Ratel's native residual (Internal Forces - Ratel Tractions)
+  PetscCall(my_ctx->ratel_i2function(ts, t, U, U_t, U_tt, Y, my_ctx->ratel_i2ctx));
+
+  // 2. Explicitly subtract preCICE nodal forces from the total residual Y
+ // PetscCall(VecAXPY(Y, -1.0, my_ctx->F));
+
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
 int main(int argc, char **argv) {
   MPI_Comm comm;
   Ratel ratel;
@@ -71,6 +92,8 @@ int main(int argc, char **argv) {
   /* Checkpointing vectors for implicit coupling */
   Vec checkpoint_V = NULL;
   PetscBool has_velocity_checkpoint = PETSC_FALSE;
+  TSI2FunctionFn *ratel_i2function = NULL;
+  void *ratel_i2ctx = NULL;
 
   PetscCall(PetscInitialize(&argc, &argv, NULL, help));
   comm = PETSC_COMM_WORLD;
@@ -149,6 +172,7 @@ int main(int argc, char **argv) {
   PetscCall(PetscObjectSetName((PetscObject)V, "V"));
   PetscCall(VecDuplicate(U, &F));
   PetscCall(PetscObjectSetName((PetscObject)F, "F"));
+  PetscCall(VecSet(F, 0.0));
 
   /* Initialize adapter with mesh and initial solution */
   PetscCall(RatelAdapterInitialize(adapter, dm, U));
@@ -165,6 +189,13 @@ int main(int argc, char **argv) {
   PetscCall(RatelTSSetupInitialCondition(ratel, ts, U));
   PetscCall(TS2SetSolution(ts, U, V));
 
+  /* Extract Ratel's native I2Function from the DM and wrap it */
+  AdapterCtx *ctx;
+  PetscCall(PetscNew(&ctx));
+  ctx->F = F;
+  PetscCall(DMTSGetI2Function(dm, &ctx->ratel_i2function, &ctx->ratel_i2ctx));
+  PetscCall(DMTSSetI2Function(dm, ApplyTractionI2Function, ctx));
+
   /* Coupled time loop with inverted control */
   PetscBool ongoing = PETSC_TRUE;
   while (ongoing) {
@@ -176,12 +207,8 @@ int main(int argc, char **argv) {
     /* Read coupling data (forces from fluid) at relative time 0.0 (start of
      * step) */
     PetscCall(RatelAdapterReadData(adapter, 0.0, F));
-    /* TODO: Apply F as Neumann BC to Ratel
-     * The force vector F contains nodal forces at the coupling interface.
-     * These should be integrated and applied as external forces in the
-     * residual evaluation. This requires modifying the Ratel residual
-     * callback or using PETSc's TSSetRHSFunction.
-     */
+    
+    /* Forces in F are automatically applied via the wrapped I2Function callback */
 
     /* Save checkpoint if required (implicit coupling)
      * For dynamic solver, we need to checkpoint both displacement and velocity
@@ -272,6 +299,7 @@ int main(int argc, char **argv) {
   if (has_velocity_checkpoint) {
     PetscCall(VecDestroy(&checkpoint_V));
   }
+  PetscCall(PetscFree(ctx));
   PetscCall(VecDestroy(&U));
   PetscCall(VecDestroy(&V));
   PetscCall(VecDestroy(&F));

@@ -1,0 +1,16 @@
+# Ratel configuration for perpendicular-flap using Gmsh mesh
+# Material: E=4MPa, nu=0.3, rho=3000kg/m^3
+
+order: 1 # Using P1 elements for now (matches linear geometry)
+q_extra: 1
+
+dm_plex:
+  filename: examples/flap.msh
+
+model: elasticity-neo-hookean-current
+E: 4.0e6
+nu: 0.3
+rho: 3000.0
+
+bc:
+  clamp: Clamped # Name from Gmsh Physical Curve

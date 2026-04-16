@@ -6,6 +6,7 @@
 
 int main(int argc, char **argv)
 {
+  int        iterationcount = 0;
   double      dt                 = 0.0;
   int         solverProcessIndex = 0;
   int         solverProcessSize  = 1;
@@ -83,13 +84,14 @@ int main(int argc, char **argv)
 
     precicec_startProfilingSection("Solve");
     for (int i = 0; i < numberOfVertices * dimensions; i++) {
-      writeData[i] = readData[i] + 1;
+      writeData[i] = readData[i] + iterationcount;
     }
     precicec_stopLastProfilingSection();
 
     precicec_writeData(meshName, writeDataName, numberOfVertices, vertexIDs, writeData);
 
     precicec_advance(dt);
+    iterationcount++;
 
     if (precicec_requiresReadingCheckpoint()) {
       printf("DUMMY: Reading iteration checkpoint \n");

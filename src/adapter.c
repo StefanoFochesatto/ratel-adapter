@@ -160,7 +160,8 @@ PetscErrorCode RatelAdapterInitialize(RatelAdapter adapter, DM dm,
   PetscCall(PetscDebugViewLabelAsText(dm, adapter->params.boundary_label_name,
                                       "boundary_debug.txt"));
 
-  /* Get dimension from DMPlex */
+  // Get dm dimension and check against configured dimenstion
+  
   PetscCall(DMGetDimension(dm, &adapter->dim));
   if (adapter->dim != adapter->params.dim) {
     SETERRQ2(adapter->comm, PETSC_ERR_ARG_INCOMP,
@@ -169,7 +170,9 @@ PetscErrorCode RatelAdapterInitialize(RatelAdapter adapter, DM dm,
   }
 
   /* Get section for DOF layout */
+  //PetscDebugViewCGNS(dm, "mesh_debug.cgns");  
   PetscCall(DMGetLocalSection(dm, &adapter->section));
+
 
   /* Extract boundary vertices */
   PetscInt n_vertices;
@@ -251,6 +254,11 @@ PetscErrorCode RatelAdapterReadData(RatelAdapter adapter,
                     adapter->n_interface_vertices, adapter->precice_vertex_ids,
                     relative_read_time, adapter->read_buffer);
 
+  /* DEBUG: Print read buffer */
+  PetscCall(PetscDebugPrintPreciceBuffer(adapter->comm, "Read Buffer (from preCICE)",
+                                         adapter->n_interface_vertices, adapter->dim,
+                                         adapter->read_buffer));
+
   /* Convert to PETSc Vec */
   PetscCall(RatelAdapterPreciceToVec(adapter->n_interface_vertices,
                                      adapter->dim, adapter->petsc_indices,
@@ -273,6 +281,11 @@ PetscErrorCode RatelAdapterAdvance(RatelAdapter adapter, Vec solution,
     PetscCall(RatelAdapterVecToPrecice(adapter->n_interface_vertices,
                                        adapter->dim, adapter->petsc_indices,
                                        solution, adapter->write_buffer));
+
+    /* DEBUG: Print write buffer */
+    PetscCall(PetscDebugPrintPreciceBuffer(adapter->comm, "Write Buffer (to preCICE)",
+                                           adapter->n_interface_vertices, adapter->dim,
+                                           adapter->write_buffer));
 
     precicec_writeData(adapter->params.mesh_name,
                        adapter->params.write_data_name,
