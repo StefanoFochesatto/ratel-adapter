@@ -42,7 +42,7 @@ struct _p_RatelAdapter {
   PetscInt rank;
 };
 
-/* Internal logging macro - simplified for now */
+// Log Macro for precice calls 
 #define RatelAdapterLog(adapter, level, ...)                                   \
   do {                                                                         \
     if ((adapter)->ratel) {                                                    \
@@ -51,7 +51,7 @@ struct _p_RatelAdapter {
     }                                                                          \
   } while (0)
 
-/* Define log levels if not available */
+// Define log levels if not available 
 #ifndef RATEL_LOG_LEVEL_INFO
 #define RATEL_LOG_LEVEL_INFO 0
 #endif
@@ -59,10 +59,13 @@ struct _p_RatelAdapter {
 #define RATEL_LOG_LEVEL_DEBUG 1
 #endif
 
-/* Forward declarations of internal functions */
+// Forward declarations of internal functions 
 PetscErrorCode RatelAdapterExtractBoundaryVertices(
     DM dm, const char *label_name, PetscInt label_value, PetscInt dim,
-    PetscInt *n_vertices, PetscReal **vertex_coords, PetscInt **petsc_indices);
+    PetscInt *n_vertices, PetscReal **vertex_coords, PetscInt **petsc_indices,
+    PetscInt **local_vertices);
+
+PetscErrorCode RatelAdapterSetMeshConnectivity(RatelAdapter adapter, PetscInt *local_vertices);
 
 PetscErrorCode RatelAdapterVecToPrecice(PetscInt n_vertices, PetscInt dim,
                                         PetscInt *indices, Vec vec,
@@ -83,7 +86,7 @@ PetscErrorCode RatelAdapterCreate(RatelAdapterParameters *params, MPI_Comm comm,
   RatelAdapter a;
   PetscCall(PetscNew(&a));
 
-  /* Copy parameters */
+  // Copy parameters 
   a->params = *params;
   a->comm = comm;
   a->ratel = ratel;
@@ -92,16 +95,16 @@ PetscErrorCode RatelAdapterCreate(RatelAdapterParameters *params, MPI_Comm comm,
   a->is_finalized = PETSC_FALSE;
   a->has_checkpoint = PETSC_FALSE;
 
-  /* Get MPI info */
+  // Get MPI info
   PetscCallMPI(MPI_Comm_rank(comm, &a->rank));
   PetscCallMPI(MPI_Comm_size(comm, (int *)&a->params.size));
   a->params.rank = a->rank;
 
-  /* Create preCICE participant using C API with explicit communicator */
+  // Create preCICE participant using C API with explicit communicator
   precicec_createParticipant_withCommunicator(
       a->params.participant_name, a->params.config_file, a->rank,
       a->params.size,
-      &comm); // Pass pointer to MPI_Comm
+      &comm);
 
   RatelAdapterLog(a, RATEL_LOG_LEVEL_INFO, "Created preCICE participant '%s'",
                   a->params.participant_name);
@@ -109,6 +112,14 @@ PetscErrorCode RatelAdapterCreate(RatelAdapterParameters *params, MPI_Comm comm,
   *adapter = a;
   PetscFunctionReturn(0);
 }
+
+
+
+
+
+
+
+
 
 PetscErrorCode RatelAdapterDestroy(RatelAdapter *adapter) {
   PetscFunctionBeginUser;
@@ -124,14 +135,14 @@ PetscErrorCode RatelAdapterDestroy(RatelAdapter *adapter) {
     a->is_finalized = PETSC_TRUE;
   }
 
-  /* Free arrays */
+  // Free arrays 
   PetscCall(PetscFree(a->precice_vertex_ids));
   PetscCall(PetscFree(a->petsc_indices));
   PetscCall(PetscFree(a->vertex_coords));
   PetscCall(PetscFree(a->write_buffer));
   PetscCall(PetscFree(a->read_buffer));
 
-  /* Free checkpoint */
+  // Free checkpoint 
   if (a->checkpoint_solution) {
     PetscCall(VecDestroy(&a->checkpoint_solution));
   }
@@ -141,6 +152,12 @@ PetscErrorCode RatelAdapterDestroy(RatelAdapter *adapter) {
 
   PetscFunctionReturn(0);
 }
+
+
+
+
+
+
 
 PetscErrorCode RatelAdapterInitialize(RatelAdapter adapter, DM dm,
                                       Vec solution) {
@@ -169,19 +186,20 @@ PetscErrorCode RatelAdapterInitialize(RatelAdapter adapter, DM dm,
              adapter->dim, adapter->params.dim);
   }
 
-  /* Get section for DOF layout */
+  // Get section for DOF layout
   //PetscDebugViewCGNS(dm, "mesh_debug.cgns");  
   PetscCall(DMGetLocalSection(dm, &adapter->section));
 
 
-  /* Extract boundary vertices */
+  // Extract boundary vertices
   PetscInt n_vertices;
   PetscReal *coords;
   PetscInt *indices;
+  PetscInt *local_vertices;
   PetscCall(RatelAdapterExtractBoundaryVertices(
       dm, adapter->params.boundary_label_name,
       adapter->params.boundary_label_value, adapter->dim, &n_vertices, &coords,
-      &indices));
+      &indices, &local_vertices));
 
   adapter->n_interface_vertices = n_vertices;
   adapter->vertex_coords = coords;
@@ -191,27 +209,36 @@ PetscErrorCode RatelAdapterInitialize(RatelAdapter adapter, DM dm,
                   "Found %D interface vertices on rank %d", n_vertices,
                   adapter->rank);
 
-  /* Allocate vertex IDs and buffers */
+  // Allocate vertex IDs and buffers
   if (n_vertices > 0) {
     PetscCall(PetscMalloc1(n_vertices, &adapter->precice_vertex_ids));
     PetscCall(PetscMalloc1(n_vertices * adapter->dim, &adapter->write_buffer));
     PetscCall(PetscMalloc1(n_vertices * adapter->dim, &adapter->read_buffer));
 
-    /* Register vertices with preCICE */
+    // Register vertices with preCICE 
     precicec_setMeshVertices(adapter->params.mesh_name, n_vertices,
                              adapter->vertex_coords,
                              adapter->precice_vertex_ids);
 
     RatelAdapterLog(adapter, RATEL_LOG_LEVEL_INFO,
                     "Registered %D vertices with preCICE", n_vertices);
+                    
+    // if (precicec_requiresMeshConnectivityFor(adapter->params.mesh_name)) {
+    //     PetscCall(RatelAdapterSetMeshConnectivity(adapter, local_vertices));
+    //     RatelAdapterLog(adapter, RATEL_LOG_LEVEL_INFO,
+    //                     "Registered mesh connectivity with preCICE");
+    // }
   }
 
-  /* Write initial data if required */
+  // Free local_vertices mapping as it is no longer needed
+  //PetscCall(PetscFree(local_vertices));
+
+  // Write initial data if required
   PetscBool requires_init = PETSC_FALSE;
   PetscCall(RatelAdapterRequiresInitialData(adapter, &requires_init));
 
   if (requires_init && n_vertices > 0) {
-    /* Extract displacements from solution */
+    // Extract displacements from solution and write to preCICE
     PetscCall(RatelAdapterVecToPrecice(adapter->n_interface_vertices,
                                        adapter->dim, adapter->petsc_indices,
                                        solution, adapter->write_buffer));
@@ -224,9 +251,8 @@ PetscErrorCode RatelAdapterInitialize(RatelAdapter adapter, DM dm,
                     "Wrote initial data to preCICE");
   }
 
-  /* Initialize preCICE */
+  // Initialize preCICE
   precicec_initialize();
-
   adapter->is_initialized = PETSC_TRUE;
 
   RatelAdapterLog(adapter, RATEL_LOG_LEVEL_INFO,
@@ -234,6 +260,12 @@ PetscErrorCode RatelAdapterInitialize(RatelAdapter adapter, DM dm,
 
   PetscFunctionReturn(0);
 }
+
+
+
+
+
+
 
 PetscErrorCode RatelAdapterReadData(RatelAdapter adapter,
                                     PetscReal relative_read_time,
@@ -260,7 +292,7 @@ PetscErrorCode RatelAdapterReadData(RatelAdapter adapter,
                                          adapter->read_buffer));
 
   /* Convert to PETSc Vec */
-  PetscCall(RatelAdapterPreciceToVec(adapter->n_interface_vertices,
+   PetscCall(RatelAdapterPreciceToVec(adapter->n_interface_vertices,
                                      adapter->dim, adapter->petsc_indices,
                                      adapter->read_buffer, boundary_data));
 

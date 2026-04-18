@@ -6,6 +6,9 @@ const char help[] = "Ratel - dynamic example with preCICE coupling using callbac
 #include <stddef.h>
 #include <ratel-adapter/ratel-adapter.h>
 // Context for TS callbacks and I2Function wrapper
+
+
+
 typedef struct {
   RatelAdapter adapter;
   Vec U;
@@ -16,10 +19,15 @@ typedef struct {
   TSI2FunctionFn *ratel_i2function;
   void *ratel_i2ctx;
 } AdapterCtx;
+
+
+
+
 // Wrapper for the TS I2Function to include preCICE forces
 static PetscErrorCode ApplyTractionI2Function(TS ts, PetscReal t, Vec U, Vec U_t, Vec U_tt, Vec Y, void *ctx) {
   AdapterCtx *my_ctx = (AdapterCtx *)ctx;
   PetscFunctionBeginUser;
+
   // 1. Evaluate Ratel's native residual (Internal Forces - Ratel Tractions)
   PetscCall(my_ctx->ratel_i2function(ts, t, U, U_t, U_tt, Y, my_ctx->ratel_i2ctx));
   // 2. Explicitly subtract preCICE nodal forces from the total residual Y
@@ -27,6 +35,11 @@ static PetscErrorCode ApplyTractionI2Function(TS ts, PetscReal t, Vec U, Vec U_t
   PetscCall(VecAXPY(Y, -1.0, my_ctx->F));
   PetscFunctionReturn(PETSC_SUCCESS);
 }
+
+
+
+
+
 // Pre-step callback for preCICE coupling
 static PetscErrorCode PreStepAdapter(TS ts) {
   AdapterCtx *ctx;
@@ -56,6 +69,10 @@ static PetscErrorCode PreStepAdapter(TS ts) {
   }
   PetscFunctionReturn(PETSC_SUCCESS);
 }
+
+
+
+
 // Post-step callback for preCICE coupling
 static PetscErrorCode PostStepAdapter(TS ts) {
   AdapterCtx *ctx;
@@ -95,6 +112,9 @@ static PetscErrorCode PostStepAdapter(TS ts) {
 
      PetscFunctionReturn(PETSC_SUCCESS);
    }
+
+
+
 
    int main(int argc, char **argv) {
      MPI_Comm    comm;
@@ -255,6 +275,8 @@ static PetscErrorCode PostStepAdapter(TS ts) {
        PetscCall(TSGetConvergedReason(ts, &reason));
        if (!quiet || reason < TS_CONVERGED_ITERATING) PetscCall(PetscPrintf(comm, "TS converged reason: %s\n", TSConvergedReasons[reason]));
      }
+
+
 
      // Cleanup
      PetscCall(RatelAdapterDestroy(&adapter));

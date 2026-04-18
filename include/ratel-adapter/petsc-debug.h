@@ -165,4 +165,84 @@ static inline PetscErrorCode PetscDebugPrintPreciceBuffer(MPI_Comm comm, const c
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 
+/**
+ * @brief Prints the values of a vector U on the vertices belonging to a specific label stratum.
+ *
+ * @param dm          The DMPlex object
+ * @param U           The vector to read from (e.g., solution or force)
+ * @param label_name  The name of the label (e.g., "Face Sets")
+ * @param label_value The value in the label identifying the interface
+ */
+static inline PetscErrorCode PetscDebugPrintVectorOnInterface(DM dm, Vec U, const char *label_name, 
+                                                              PetscInt label_value) {
+    DMLabel         label;
+    IS              stratumIS;
+    const PetscInt *points;
+    PetscInt        numPoints, dim;
+    PetscSection    section;
+    const PetscScalar *u_array;
+    MPI_Comm        comm;
+    PetscInt        vStart, vEnd;
+
+    PetscFunctionBegin;
+    PetscCall(PetscObjectGetComm((PetscObject)dm, &comm));
+    PetscCall(DMGetDimension(dm, &dim));
+    PetscCall(DMGetLocalSection(dm, &section));
+    PetscCall(DMGetLabel(dm, label_name, &label));
+    if (!label) {
+        PetscCall(PetscPrintf(comm, "DEBUG: Label '%s' not found.\n", label_name));
+        PetscFunctionReturn(PETSC_SUCCESS);
+    }
+
+    // Ensure label is complete on vertices
+    DMLabel temp_label;
+    PetscCall(DMLabelDuplicate(label, &temp_label));
+    PetscCall(DMPlexLabelComplete(dm, temp_label));
+
+    PetscCall(DMLabelGetStratumIS(temp_label, label_value, &stratumIS));
+    if (!stratumIS) {
+        PetscCall(PetscPrintf(comm, "DEBUG: Label '%s' value %" PetscInt_FMT " has no points.\n", label_name, label_value));
+        PetscCall(DMLabelDestroy(&temp_label));
+        PetscFunctionReturn(PETSC_SUCCESS);
+    }
+
+    PetscCall(DMPlexGetDepthStratum(dm, 0, &vStart, &vEnd));
+    PetscCall(ISGetIndices(stratumIS, &points));
+    PetscCall(ISGetSize(stratumIS, &numPoints));
+    PetscCall(VecGetArrayRead(U, &u_array));
+
+    PetscCall(PetscPrintf(comm, "--- Vector Values on Interface: %s (Value %" PetscInt_FMT ") ---\n", label_name, label_value));
+
+    for (PetscInt i = 0; i < numPoints; ++i) {
+        PetscInt p = points[i];
+        if (p < vStart || p >= vEnd) continue; // Not a vertex
+
+        PetscInt global_offset;
+        PetscCall(DMPlexGetPointGlobal(dm, p, &global_offset, NULL));
+        if (global_offset < 0) continue; // Not locally owned
+
+        PetscInt dof, off;
+        PetscCall(PetscSectionGetDof(section, p, &dof));
+        PetscCall(PetscSectionGetOffset(section, p, &off));
+
+        if (dof > 0) {
+            PetscCall(PetscPrintf(comm, "  Vertex %" PetscInt_FMT ": [", p));
+            for (PetscInt d = 0; d < dof; ++d) {
+                PetscCall(PetscPrintf(comm, "%g", (double)PetscRealPart(u_array[off + d])));
+                if (d < dof - 1) {
+                    PetscCall(PetscPrintf(comm, ", "));
+                }
+            }
+            PetscCall(PetscPrintf(comm, "]\n"));
+        }
+    }
+
+    PetscCall(VecRestoreArrayRead(U, &u_array));
+    PetscCall(ISRestoreIndices(stratumIS, &points));
+    PetscCall(ISDestroy(&stratumIS));
+    PetscCall(DMLabelDestroy(&temp_label));
+    PetscCall(PetscPrintf(comm, "---------------------------\n"));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
 #endif /* PETSC_DEBUG_H */
