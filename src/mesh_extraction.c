@@ -124,8 +124,6 @@ PetscErrorCode RatelAdapterExtractBoundaryVertices( DM dm, const char *label_nam
     PetscFunctionReturn(0);
   }
 
-
-
   // Now we will extract coordinates and build our petsc_indices array to map preCICE data to petsc data.
   // Allocate storage
   PetscCall(PetscMalloc1(local_count * dim, vertex_coords));
@@ -175,5 +173,132 @@ PetscErrorCode RatelAdapterExtractBoundaryVertices( DM dm, const char *label_nam
   }
 
   PetscCall(PetscFree(local_vertices));
+  PetscFunctionReturn(0);
+}
+
+
+PetscErrorCode RatelAdapterExtractBoundaryDOFs(DM dm, const char *label_name, PetscInt label_value, PetscInt dim, 
+                                                       PetscInt *n_dofs, PetscReal **dof_coords, 
+                                                      PetscInt **petsc_indices, PetscInt **local_points) {
+
+  PetscFunctionBeginUser;
+  
+  // Get Label
+  DMLabel label, temp_label;
+  PetscCall(DMGetLabel(dm, label_name, &label));
+  if (!label) {
+    *n_dofs = 0;
+    *dof_coords = NULL;
+    *petsc_indices = NULL;
+    PetscFunctionReturn(0);
+  }
+
+  // Duplicate and complete to ensure labels propagate from faces to edges/vertices
+  PetscCall(DMLabelDuplicate(label, &temp_label));
+  PetscCall(DMPlexLabelComplete(dm, temp_label));
+
+  // Identify all coupling dofs.  (Corner, Midside, Face-center, etc.)
+  PetscInt     pStart, pEnd;
+  PetscSection section;
+  PetscCall(DMGetLocalSection(dm, &section));
+  PetscCall(DMPlexGetChart(dm, &pStart, &pEnd));
+
+  // Allocate temporary storage for the maximum possible number of dm points
+  PetscInt *local_dm_points;
+  PetscCall(PetscMalloc1(pEnd - pStart, &local_dm_points));
+  PetscInt dmpoint_local_count = 0;
+  *n_dofs = 0;
+
+  for (PetscInt p = pStart; p < pEnd; p++) {
+    PetscInt dof, val, global_offset;
+
+    // Filter dm point for coupling label
+    PetscCall(DMLabelGetValue(temp_label, p, &val));
+    if (val != label_value) continue;
+
+    // Filter dm points for dofs
+    PetscCall(PetscSectionGetDof(section, p, &dof));
+    if (dof <= 0) continue;
+
+    // Filter dm point for local ownership
+    PetscCall(DMPlexGetPointGlobal(dm, p, &global_offset, NULL));
+    if (global_offset < 0) continue;
+
+    *n_dofs += dof / dim; 
+    local_dm_points[dmpoint_local_count++] = p;
+  }
+  // Cleanup temporary label
+  PetscCall(DMLabelDestroy(&temp_label));
+
+  // Check for empty label
+  if (dmpoint_local_count == 0) {
+    PetscCall(PetscFree(local_dm_points));
+    *n_dofs = 0;
+    *dof_coords = NULL;
+    *petsc_indices = NULL;
+    *local_points  = NULL; 
+    PetscFunctionReturn(0);
+  }
+
+  // Now we will extract coordinates and build our petsc_indices array to map preCICE data to petsc data.
+  // allocating memory
+  PetscCall(PetscMalloc1(*n_dofs * dim, dof_coords));
+  // Get coordinate section and local vec 
+  PetscSection coord_section;
+  Vec          coord_vec;
+  const PetscScalar *coords;
+  PetscCall(DMGetCoordinateSection(dm, &coord_section));
+  PetscCall(DMGetCoordinatesLocal(dm, &coord_vec));
+  PetscCall(VecGetArrayRead(coord_vec, &coords)); // get pointer to coordinate array for reading
+  
+  // loop through local vertices and extract coordinates
+  PetscInt node_idx = 0; // Running counter for the flat preCICE array
+  for (PetscInt v = 0; v < dmpoint_local_count; v++) {
+    PetscInt p = local_dm_points[v];
+    PetscInt dof, offset;
+
+    PetscCall(PetscSectionGetDof(section, p, &dof));
+    PetscCall(PetscSectionGetOffset(coord_section, p, &offset));
+
+    PetscInt dofs_per_dmpoint = dof / dim;
+  
+    for (PetscInt n = 0; n < dofs_per_dmpoint; n++) {
+      for (PetscInt d = 0; d < dim; d++) {
+        (*dof_coords)[node_idx * dim + d] = coords[offset + (n * dim) + d];
+      }
+      node_idx++;
+    }
+  }
+  // free read-only pointer to the coordinate array
+  PetscCall(VecRestoreArrayRead(coord_vec, &coords));
+
+  // We have now n_dofs, which is the number of owned dofs, 
+  // the local_dm_points array which maps from 0..dmpoint_local_count to the index in the DM
+  // and the dof_coords array which has the coordinates for those dofs, in the same layout as precice
+  // x_1, y_1, z_1, x_2, y_2, z_2, ...
+
+  // Build PETSc indices for DOF mapping 
+  PetscCall(PetscMalloc1(*n_dofs * dim, petsc_indices));
+
+  node_idx = 0; // Reset counter
+  for (PetscInt v = 0; v < dmpoint_local_count; v++) {
+    PetscInt p = local_dm_points[v];
+    PetscInt dof, offset;
+    PetscCall(PetscSectionGetDof(section, p, &dof));
+    PetscCall(PetscSectionGetOffset(section, p, &offset));
+
+    PetscInt nodes_on_this_point = dof / dim;
+
+    for (PetscInt n = 0; n < nodes_on_this_point; n++) {
+      for (PetscInt d = 0; d < dim; d++) {
+        // Map every DOF for every node on this point
+        (*petsc_indices)[node_idx * dim + d] = offset + (n * dim) + d;
+      }
+      node_idx++;
+    }
+  }
+
+  *local_points = local_dm_points;
+  // Final Cleanup
   PetscFunctionReturn(0);
 }
