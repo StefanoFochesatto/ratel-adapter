@@ -137,7 +137,7 @@ int main(int argc, char **argv) {
     /* Save checkpoint if required (implicit coupling) */
     PetscBool saved;
     PetscCall(
-        RatelAdapterSaveCheckpointIfRequired(adapter, U, time, step, &saved));
+        RatelAdapterSaveCheckpointIfRequired(adapter, U, NULL, time, step, &saved));
 
     /* Solve one timestep */
     PetscCall(TSSetTimeStep(ts, dt));
@@ -149,7 +149,7 @@ int main(int argc, char **argv) {
 
     /* Check if we need to reload checkpoint */
     PetscBool reloaded;
-    PetscCall(RatelAdapterReloadCheckpointIfRequired(adapter, U, &time, &step,
+    PetscCall(RatelAdapterReloadCheckpointIfRequired(adapter, U, NULL, &time, &step,
                                                      &reloaded));
     if (reloaded) {
       /* Reset TS time */

@@ -43,6 +43,15 @@ find_path(RATEL_INCLUDE_DIR
         $ENV{RATEL_DIR}/include
 )
 
+# Find libCEED (required by Ratel internals)
+find_path(CEED_INCLUDE_DIR
+    NAMES ceed.h
+    PATHS
+        /home/stefano/libCEED/include
+        /usr/local/include
+        $ENV{CEED_DIR}/include
+)
+
 find_library(RATEL_LIBRARY
     NAMES ratel
     PATHS
@@ -84,6 +93,7 @@ target_include_directories(ratel-adapter
         ${CMAKE_SOURCE_DIR}/src
         ${PETSC_INCLUDE_DIRS}
         ${RATEL_INCLUDE_DIR}
+        ${CEED_INCLUDE_DIR}
 )
 
 target_compile_options(ratel-adapter PRIVATE ${PETSC_CFLAGS_OTHER} ${PRECICE_CFLAGS_OTHER})
@@ -116,6 +126,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/examples/ex02-quasistatic-precice.c)
     target_include_directories(ex02-quasistatic-precice PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${RATEL_INCLUDE_DIR}
+        ${CEED_INCLUDE_DIR}
         ${PETSC_INCLUDE_DIRS}
         ${PRECICE_INCLUDE_DIRS}
     )
@@ -141,6 +152,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/examples/ex03-dynamic-precice.c)
     target_include_directories(ex03-dynamic-precice PRIVATE
         ${CMAKE_SOURCE_DIR}/include
         ${RATEL_INCLUDE_DIR}
+        ${CEED_INCLUDE_DIR}
         ${PETSC_INCLUDE_DIRS}
         ${PRECICE_INCLUDE_DIRS}
     )

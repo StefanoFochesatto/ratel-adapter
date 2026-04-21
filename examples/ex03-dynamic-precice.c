@@ -1,20 +1,22 @@
 #include <petsc.h>#include <ratel.h>
 #include <stddef.h>
-#include <ratel-adapter/petsc-debug.h>
+#include <ratel-adapter/petsc-debug.h> // my petsc debugging utilities for me and my stupidty
 #include <ratel-adapter/ratel-adapter.h>
+
+static char help[] = "Ratel dynamic example with preCICE coupling.\n\n";
+
+
+
+/// Section specifying callbacks for TS time-stepping(with rollback for implicit coupling) and I2Function Wrapper(for applying preCICE forces as Neumann BCs in the residual evaluation).
 // Context for TS callbacks and I2Function wrapper
 typedef struct {
   RatelAdapter adapter;
   Vec U;
   Vec V;
   Vec F;
-  Vec checkpoint_V;
-  PetscBool has_velocity_checkpoint;
   TSI2FunctionFn *ratel_i2function;
   void *ratel_i2ctx;
 } AdapterCtx;
-
-
 
 
 // Wrapper for the TS I2Function to include preCICE forces
@@ -31,17 +33,12 @@ static PetscErrorCode ApplyTractionI2Function(TS ts, PetscReal t, Vec U, Vec U_t
 
 
 
-
-
 // Pre-step callback for preCICE coupling
 static PetscErrorCode PreStepAdapter(TS ts) {
   AdapterCtx *ctx;
   PetscReal time, dt, precice_dt;
   PetscInt step;
   PetscBool saved;
- 
- 
- 
  
   PetscFunctionBeginUser;
   PetscCall(TSGetApplicationContext(ts, &ctx));
@@ -54,19 +51,16 @@ static PetscErrorCode PreStepAdapter(TS ts) {
   dt = PetscMin(dt, precice_dt);
   PetscCall(TSSetTimeStep(ts, dt));
  
-  // Read coupling data (forces from fluid) at relative time 0.0
+  // Read coupling data (forces from fluid) at relative time dt (end of window)
   // These are stored in ctx->F and used by ApplyTractionI2Function during the SNES solve
-  PetscCall(RatelAdapterReadData(ctx->adapter, 0.0, ctx->F));
+  PetscCall(RatelAdapterReadData(ctx->adapter, dt, ctx->F));
  
+  PetscReal fnorm;
+  PetscCall(VecNorm(ctx->F, NORM_2, &fnorm));
+  PetscCall(PetscPrintf(PETSC_COMM_WORLD, "DEBUG: Read Force from preCICE. L2 Norm = %g\n", (double)fnorm));
+
   // Save checkpoint if required (implicit coupling)
-  PetscCall(RatelAdapterSaveCheckpointIfRequired(ctx->adapter, ctx->U, time, step, &saved));
-  if (saved) {
-    if (!ctx->has_velocity_checkpoint) {
-      PetscCall(VecDuplicate(ctx->V, &ctx->checkpoint_V));
-      ctx->has_velocity_checkpoint = PETSC_TRUE;
-    }
-    PetscCall(VecCopy(ctx->V, ctx->checkpoint_V));
-  }
+  PetscCall(RatelAdapterSaveCheckpointIfRequired(ctx->adapter, ctx->U, ctx->V, time, step, &saved));
   PetscFunctionReturn(PETSC_SUCCESS);
 }
 
@@ -76,33 +70,37 @@ static PetscErrorCode PreStepAdapter(TS ts) {
 // Post-step callback for preCICE coupling
 static PetscErrorCode PostStepAdapter(TS ts) {
   AdapterCtx *ctx;
+  DM dm;
   PetscReal time, dt, precice_dt;
   PetscInt step;
   PetscBool reloaded, ongoing;
- 
+
   PetscFunctionBeginUser;
   PetscCall(TSGetApplicationContext(ts, &ctx));
+  PetscCall(TSGetDM(ts, &dm));
   PetscCall(TSGetTime(ts, &time));
   PetscCall(TSGetTimeStep(ts, &dt));
   PetscCall(TSGetStepNumber(ts, &step));
 
   // Write coupling data (displacements) and advance preCICE
   PetscCall(RatelAdapterAdvance(ctx->adapter, ctx->U, dt, &precice_dt));
-  
+
+  // Debug export of the solution to CGNS for visualization
+  //PetscCall(PetscDebugSaveSolutionCGNS(dm, ctx->U, time + dt, step + 1, "mesh_debug"));
+
   // Check if we need to reload checkpoint
-  PetscCall(RatelAdapterReloadCheckpointIfRequired(ctx->adapter, ctx->U, &time, &step, &reloaded));
+  PetscCall(RatelAdapterReloadCheckpointIfRequired(ctx->adapter, ctx->U, ctx->V, &time, &step, &reloaded));
   if (reloaded) {
-    if (ctx->has_velocity_checkpoint) {
-      PetscCall(VecCopy(ctx->checkpoint_V, ctx->V));
-    }
-    // Reset TS time and step
-    PetscCall(TSSetTime(ts, time));
-    PetscCall(TSSetStepNumber(ts, step));
-    // Update solution in TS
-    PetscCall(TS2SetSolution(ts, ctx->U, ctx->V));
-       // Tell TS that the step was rejected so it retries
-       PetscCall(TSSetConvergedReason(ts, TS_CONVERGED_ITERATING));
-     }
+    // Tell TS that the step failed and it must roll back its internal state
+    PetscCall(TSRollBack(ts));
+    // Tell TS that the step was rejected so it retries
+    PetscCall(TSSetConvergedReason(ts, TS_CONVERGED_ITERATING));
+
+    
+    // PetscReal fnorm;
+    // PetscCall(VecNorm(ctx->F, NORM_2, &fnorm));
+    // PetscCall(PetscPrintf(PETSC_COMM_WORLD, "DEBUG: Read Force from preCICE (Rollback Retry). L2 Norm = %g\n", (double)fnorm));
+  }
 
      // Check if coupling continues
      PetscCall(RatelAdapterIsCouplingOngoing(ctx->adapter, &ongoing));
@@ -134,12 +132,14 @@ static PetscErrorCode PostStepAdapter(TS ts) {
      PetscCall(PetscInitialize(&argc, &argv, NULL, help));
      comm = PETSC_COMM_WORLD;
 
+     // Initialize parameters to zero
+     memset(&adapter_params, 0, sizeof(RatelAdapterParameters));
+
      // Read command line options
      PetscOptionsBegin(comm, NULL, "Ratel dynamic example", NULL);
      PetscCall(PetscOptionsBool("-quiet", "Suppress summary outputs", NULL, quiet, &quiet, NULL));
 
      // Adapter options - defaults match solverdummy config 
-     // Eventually we'll throw this into the main adapter code. 
      strcpy(adapter_params.participant_name, "SolverOne");
      PetscCall(PetscOptionsString("-precice_participant",
                                   "preCICE participant name", NULL,
@@ -182,6 +182,10 @@ static PetscErrorCode PostStepAdapter(TS ts) {
      adapter_params.dim = 3;
      PetscCall(PetscOptionsInt("-dim", "Spatial dimension", NULL,
                                adapter_params.dim, &adapter_params.dim, NULL));
+
+     adapter_params.is_delta = PETSC_TRUE;
+     PetscCall(PetscOptionsBool("-precice_is_delta", "Whether to write increments instead of absolute values", NULL,
+                                 adapter_params.is_delta, &adapter_params.is_delta, NULL));
 
      PetscOptionsEnd();
 
@@ -232,8 +236,6 @@ static PetscErrorCode PostStepAdapter(TS ts) {
      ctx->U = U;
      ctx->V = V;
      ctx->F = F;
-     ctx->checkpoint_V = NULL;
-     ctx->has_velocity_checkpoint = PETSC_FALSE;
 
 
      // Wrap Ratel's I2Function to include preCICE forces
@@ -287,9 +289,6 @@ static PetscErrorCode PostStepAdapter(TS ts) {
 
      // Cleanup
      PetscCall(RatelAdapterDestroy(&adapter));
-     if (ctx->has_velocity_checkpoint) {
-       PetscCall(VecDestroy(&ctx->checkpoint_V));
-     }
      PetscCall(PetscFree(ctx));
      PetscCall(TSDestroy(&ts));
      PetscCall(DMDestroy(&dm));

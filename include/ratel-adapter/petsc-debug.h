@@ -88,6 +88,32 @@ PetscFunctionReturn(PETSC_SUCCESS);
 
 
 /**
+* @brief Exports a DM and solution Vector to a CGNS file for ParaView, supporting time-stepping.
+*
+* @param dm         The DMPlex object
+* @param U          The solution vector
+* @param time       Current simulation time
+* @param step       Current time step index
+* @param filename   The output filename
+*/
+static inline PetscErrorCode PetscDebugSaveSolutionCGNS(DM dm, Vec U, PetscReal time, PetscInt step, const char *filename_base) {
+PetscViewer viewer;
+char        filename[PETSC_MAX_PATH_LEN];
+PetscFunctionBegin;
+
+// Generate a filename like mesh_debug.0005.cgns
+// ParaView will automatically group these into a time series
+PetscCall(PetscSNPrintf(filename, sizeof(filename), "%s.%04d.cgns", filename_base, (int)step));
+
+PetscCall(DMSetOutputSequenceNumber(dm, step, time));
+PetscCall(PetscViewerCGNSOpen(PetscObjectComm((PetscObject)dm), filename, FILE_MODE_WRITE, &viewer));
+PetscCall(DMView(dm, viewer));
+PetscCall(VecView(U, viewer));
+PetscCall(PetscViewerDestroy(&viewer));
+PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+/**
 * @brief Exports a DM to a CGNS file for ParaView.
 */
 static inline PetscErrorCode PetscDebugViewCGNS(DM dm, const char *filename) {
@@ -242,6 +268,154 @@ static inline PetscErrorCode PetscDebugPrintVectorOnInterface(DM dm, Vec U, cons
     PetscCall(ISDestroy(&stratumIS));
     PetscCall(DMLabelDestroy(&temp_label));
     PetscCall(PetscPrintf(comm, "---------------------------\n"));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+/**
+ * @brief Exports the extracted interface coordinates to a simple CSV file.
+ */
+static inline PetscErrorCode PetscDebugExportInterfacePoints(MPI_Comm comm, PetscInt n_vertices, PetscInt dim, const PetscReal *coords, const char *filename) {
+    PetscMPIInt rank;
+    PetscFunctionBegin;
+    PetscCallMPI(MPI_Comm_rank(comm, &rank));
+    
+    char full_filename[PETSC_MAX_PATH_LEN];
+    PetscCall(PetscSNPrintf(full_filename, sizeof(full_filename), "%s_rank%d.csv", filename, rank));
+    
+    FILE *fp = fopen(full_filename, "w");
+    if (!fp) {
+        SETERRQ(comm, PETSC_ERR_FILE_OPEN, "Could not open file %s", full_filename);
+    }
+    
+    fprintf(fp, "PointID,X,Y,Z\n");
+    for (PetscInt i = 0; i < n_vertices; i++) {
+        fprintf(fp, "%" PetscInt_FMT ",", i);
+        for (PetscInt d = 0; d < dim; d++) {
+            fprintf(fp, "%g", (double)coords[i * dim + d]);
+            if (d < dim - 1) fprintf(fp, ",");
+        }
+        fprintf(fp, "\n");
+    }
+    fclose(fp);
+    PetscCall(PetscPrintf(comm, "DEBUG: Wrote interface points to %s\n", full_filename));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+/**
+ * @brief Prints the mapping between preCICE flat buffer indices, PETSc local offsets, and coordinates.
+ */
+static inline PetscErrorCode PetscDebugPrintMapping(MPI_Comm comm, PetscInt n_vertices, PetscInt dim, const PetscInt *petsc_indices, const PetscReal *coords) {
+    PetscFunctionBegin;
+    PetscCall(PetscPrintf(comm, "--- preCICE to PETSc Mapping ---\n"));
+    for (PetscInt i = 0; i < n_vertices; i++) {
+        PetscCall(PetscPrintf(comm, "  preCICE Vertex %" PetscInt_FMT " -> PETSc Local Offsets [", i));
+        for (PetscInt d = 0; d < dim; d++) {
+            PetscCall(PetscPrintf(comm, "%" PetscInt_FMT, petsc_indices[i * dim + d]));
+            if (d < dim - 1) PetscCall(PetscPrintf(comm, ", "));
+        }
+        PetscCall(PetscPrintf(comm, "] at Coords ["));
+        for (PetscInt d = 0; d < dim; d++) {
+            PetscCall(PetscPrintf(comm, "%g", (double)coords[i * dim + d]));
+            if (d < dim - 1) PetscCall(PetscPrintf(comm, ", "));
+        }
+        PetscCall(PetscPrintf(comm, "]\n"));
+    }
+    PetscCall(PetscPrintf(comm, "--------------------------------\n"));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+/**
+ * @brief Verifies that the global vector U is exactly 0.0 at all nodes NOT on the coupling interface.
+ */
+static inline PetscErrorCode PetscDebugVerifyZeroes(DM dm, Vec U, const char *label_name, PetscInt label_value) {
+    DMLabel label, temp_label;
+    IS stratumIS;
+    MPI_Comm comm;
+    Vec local_U;
+    const PetscScalar *u_array;
+    PetscInt pStart, pEnd, dim;
+    PetscSection section;
+
+    PetscFunctionBegin;
+    PetscCall(PetscObjectGetComm((PetscObject)dm, &comm));
+    PetscCall(DMGetDimension(dm, &dim));
+    PetscCall(DMGetLabel(dm, label_name, &label));
+    if (!label) PetscFunctionReturn(PETSC_SUCCESS);
+
+    PetscCall(DMLabelDuplicate(label, &temp_label));
+    PetscCall(DMPlexLabelComplete(dm, temp_label));
+
+    PetscCall(DMLabelGetStratumIS(temp_label, label_value, &stratumIS));
+    PetscCall(DMGetLocalVector(dm, &local_U));
+    PetscCall(DMGlobalToLocal(dm, U, INSERT_VALUES, local_U));
+    PetscCall(VecGetArrayRead(local_U, &u_array));
+    PetscCall(DMGetLocalSection(dm, &section));
+    PetscCall(DMPlexGetChart(dm, &pStart, &pEnd));
+
+    PetscInt non_zero_count = 0;
+    for (PetscInt p = pStart; p < pEnd; ++p) {
+        PetscInt dof, off, val = -1;
+        PetscCall(PetscSectionGetDof(section, p, &dof));
+        if (dof <= 0) continue;
+
+        PetscCall(DMLabelGetValue(temp_label, p, &val));
+        if (val == label_value) continue; // It is on the interface
+
+        PetscCall(PetscSectionGetOffset(section, p, &off));
+        for (PetscInt d = 0; d < dof; ++d) {
+            if (PetscAbsScalar(u_array[off + d]) > 1e-14) {
+                non_zero_count++;
+                if (non_zero_count <= 5) {
+                    PetscCall(PetscPrintf(comm, "DEBUG ERROR: Non-zero value %g found at non-interface point %" PetscInt_FMT " (dof %" PetscInt_FMT ")\n", (double)PetscAbsScalar(u_array[off + d]), p, d));
+                }
+            }
+        }
+    }
+
+    if (non_zero_count == 0) {
+        PetscCall(PetscPrintf(comm, "DEBUG: Verified %s boundary vector is exactly 0.0 on all non-interface nodes.\n", label_name));
+    } else {
+        PetscCall(PetscPrintf(comm, "DEBUG ERROR: Found %" PetscInt_FMT " non-zero DOF entries on non-interface nodes!\n", non_zero_count));
+    }
+
+    PetscCall(VecRestoreArrayRead(local_U, &u_array));
+    PetscCall(DMRestoreLocalVector(dm, &local_U));
+    if (stratumIS) PetscCall(ISDestroy(&stratumIS));
+    PetscCall(DMLabelDestroy(&temp_label));
+    PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+/**
+ * @brief Traces delta displacements across implicit checkpoint rollbacks.
+ */
+static inline PetscErrorCode PetscDebugTraceDeltaDisplacements(MPI_Comm comm, PetscInt n_vertices, PetscInt dim, Vec local_sol, Vec old_solution, Vec delta_U, const PetscInt *petsc_indices, const PetscReal *precice_buffer) {
+    const PetscScalar *cur_array, *old_array, *delta_array;
+    PetscFunctionBegin;
+    
+    PetscCall(VecGetArrayRead(local_sol, &cur_array));
+    PetscCall(VecGetArrayRead(old_solution, &old_array));
+    PetscCall(VecGetArrayRead(delta_U, &delta_array));
+
+    PetscCall(PetscPrintf(comm, "--- Delta Displacements Trace (First 5 nodes) ---\n"));
+    PetscInt nodes_to_print = (n_vertices > 5) ? 5 : n_vertices;
+    for (PetscInt i = 0; i < nodes_to_print; i++) {
+        PetscCall(PetscPrintf(comm, "  Vertex %" PetscInt_FMT ":\n", i));
+        for (PetscInt d = 0; d < dim; d++) {
+            PetscInt idx = petsc_indices[i * dim + d];
+            PetscReal cur = PetscRealPart(cur_array[idx]);
+            PetscReal old = PetscRealPart(old_array[idx]);
+            PetscReal delta = PetscRealPart(delta_array[idx]);
+            PetscReal precice_val = precice_buffer[i * dim + d];
+            PetscCall(PetscPrintf(comm, "    dim %" PetscInt_FMT " | Cur: %10.4e | Old: %10.4e | Delta(PETSc): %10.4e | preCICE Buffer: %10.4e\n", 
+                                  d, (double)cur, (double)old, (double)delta, (double)precice_val));
+        }
+    }
+    PetscCall(PetscPrintf(comm, "-------------------------------------------------\n"));
+
+    PetscCall(VecRestoreArrayRead(local_sol, &cur_array));
+    PetscCall(VecRestoreArrayRead(old_solution, &old_array));
+    PetscCall(VecRestoreArrayRead(delta_U, &delta_array));
+
     PetscFunctionReturn(PETSC_SUCCESS);
 }
 

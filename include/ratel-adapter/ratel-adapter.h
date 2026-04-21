@@ -73,6 +73,9 @@ typedef struct
   /** @brief Spatial dimension (2 or 3) */
   PetscInt dim;
 
+  /** @brief Whether to write displacement increments (delta) instead of absolute displacement */
+  PetscBool is_delta;
+
   /** @brief MPI rank (set automatically by RatelAdapterCreate) */
   PetscMPIInt rank;
   /** @brief MPI communicator size (set automatically) */
@@ -245,6 +248,7 @@ PetscErrorCode RatelAdapterAdvance(RatelAdapter adapter, Vec solution, PetscReal
  *
  * @param[in,out] adapter Adapter context
  * @param[in] solution Current solution vector to save
+ * @param[in] velocity Current velocity vector to save (optional, can be NULL)
  * @param[in] time Current simulation time
  * @param[in] step Current timestep number
  * @param[out] saved PETSC_TRUE if a checkpoint was created
@@ -254,12 +258,13 @@ PetscErrorCode RatelAdapterAdvance(RatelAdapter adapter, Vec solution, PetscReal
  * Example:
  * @code
  * PetscBool saved;
- * RatelAdapterSaveCheckpointIfRequired(adapter, U, time, step, &saved);
+ * RatelAdapterSaveCheckpointIfRequired(adapter, U, V, time, step, &saved);
  * @endcode
  *
  * @ingroup RatelAdapter
  */
 PetscErrorCode RatelAdapterSaveCheckpointIfRequired(RatelAdapter adapter, Vec solution,
+                                                    Vec velocity,
                                                     PetscReal time, PetscInt step,
                                                     PetscBool *saved);
 
@@ -273,6 +278,7 @@ PetscErrorCode RatelAdapterSaveCheckpointIfRequired(RatelAdapter adapter, Vec so
  *
  * @param[in,out] adapter Adapter context
  * @param[out] solution Solution vector to restore into
+ * @param[out] velocity Velocity vector to restore into (optional, can be NULL)
  * @param[out] time Time value to restore
  * @param[out] step Timestep number to restore
  * @param[out] reloaded PETSC_TRUE if state was restored
@@ -282,7 +288,7 @@ PetscErrorCode RatelAdapterSaveCheckpointIfRequired(RatelAdapter adapter, Vec so
  * Example:
  * @code
  * PetscBool reloaded;
- * RatelAdapterReloadCheckpointIfRequired(adapter, U, &time, &step, &reloaded);
+ * RatelAdapterReloadCheckpointIfRequired(adapter, U, V, &time, &step, &reloaded);
  * if (reloaded) {
  *     TSSetTime(ts, time);  // Reset PETSc TS time
  *     continue;             // Retry timestep
@@ -292,6 +298,7 @@ PetscErrorCode RatelAdapterSaveCheckpointIfRequired(RatelAdapter adapter, Vec so
  * @ingroup RatelAdapter
  */
 PetscErrorCode RatelAdapterReloadCheckpointIfRequired(RatelAdapter adapter, Vec solution,
+                                                      Vec velocity,
                                                       PetscReal *time, PetscInt *step,
                                                       PetscBool *reloaded);
 

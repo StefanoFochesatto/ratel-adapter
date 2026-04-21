@@ -29,11 +29,11 @@ PetscErrorCode RatelAdapterVecToPrecice(PetscInt n_vertices, PetscInt dim, Petsc
     PetscFunctionReturn(0);
   }
 
-  /* Get array from Vec */
+  //Get array from Vec 
   const PetscScalar* array;
   PetscCall(VecGetArrayRead(vec, &array));
 
-  /* Copy data using petsc_indices */
+  // Copy data using petsc_indices
   for (PetscInt v = 0; v < n_vertices; v++) {
     for (PetscInt d = 0; d < dim; d++) {
       PetscInt idx = indices[v * dim + d];
@@ -70,11 +70,11 @@ PetscErrorCode RatelAdapterPreciceToVec(PetscInt n_vertices, PetscInt dim, Petsc
     PetscFunctionReturn(0);
   }
 
-  /* Get array from Vec */
+  // Get array from Vec
   PetscScalar* array;
   PetscCall(VecGetArray(vec, &array));
 
-  /* Copy data using petsc_indices */
+  // Copy data using petsc_indices
   for (PetscInt v = 0; v < n_vertices; v++) {
     for (PetscInt d = 0; d < dim; d++) {
       PetscInt idx = indices[v * dim + d];

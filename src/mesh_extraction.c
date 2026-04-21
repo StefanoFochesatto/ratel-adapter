@@ -4,6 +4,7 @@
  */
 
 #include <ratel-adapter/ratel-adapter.h>
+#include <ratel-impl.h>
 
 /**
  * @brief Extract boundary vertices from DMPlex
@@ -29,7 +30,7 @@
 
 
 
-PetscErrorCode RatelAdapterExtractBoundaryVertices( DM dm, const char *label_name, PetscInt label_value, PetscInt dim, PetscInt *n_vertices, PetscReal **vertex_coords, PetscInt **petsc_indices) {
+PetscErrorCode RatelAdapterExtractBoundaryVertices(Ratel ratel, DM dm, const char *label_name, PetscInt label_value, PetscInt dim, PetscInt *n_vertices, PetscReal **vertex_coords, PetscInt **petsc_indices) {
   
   PetscFunctionBeginUser;
   
@@ -108,7 +109,25 @@ PetscErrorCode RatelAdapterExtractBoundaryVertices( DM dm, const char *label_nam
     PetscCall(DMPlexGetPointGlobal(dm, p, &global_offset, NULL));
     // If global_offset is negative, this is a ghost vertex and we skip it.
     if (global_offset >= 0) {
-      local_vertices[local_count++] = p;
+      // Check if this point is clamped in Ratel (exclude it from coupling)
+      PetscBool is_clamped = PETSC_FALSE;
+      if (ratel) {
+        for (PetscInt f = 0; f < RATEL_MAX_FIELDS; f++) {
+          for (PetscInt j = 0; j < ratel->bc_clamp_count[f]; j++) {
+            PetscInt val;
+            PetscCall(DMLabelGetValue(label, p, &val));
+            if (val == ratel->bc_clamp_faces[f][j]) {
+              is_clamped = PETSC_TRUE;
+              break;
+            }
+          }
+          if (is_clamped) break;
+        }
+      }
+      
+      if (!is_clamped) {
+        local_vertices[local_count++] = p;
+      }
     }
   }
 
@@ -176,8 +195,8 @@ PetscErrorCode RatelAdapterExtractBoundaryVertices( DM dm, const char *label_nam
   PetscFunctionReturn(0);
 }
 
-
-PetscErrorCode RatelAdapterExtractBoundaryDOFs(DM dm, const char *label_name, PetscInt label_value, PetscInt dim, 
+// WIP function
+PetscErrorCode RatelAdapterExtractBoundaryDOFs(Ratel ratel, DM dm, const char *label_name, PetscInt label_value, PetscInt dim, 
                                                        PetscInt *n_dofs, PetscReal **dof_coords, 
                                                       PetscInt **petsc_indices, PetscInt **local_points) {
 
@@ -199,8 +218,9 @@ PetscErrorCode RatelAdapterExtractBoundaryDOFs(DM dm, const char *label_name, Pe
 
   // Identify all coupling dofs.  (Corner, Midside, Face-center, etc.)
   PetscInt     pStart, pEnd;
-  PetscSection section;
+  PetscSection section, global_section;
   PetscCall(DMGetLocalSection(dm, &section));
+  PetscCall(DMGetGlobalSection(dm, &global_section));
   PetscCall(DMPlexGetChart(dm, &pStart, &pEnd));
 
   // Allocate temporary storage for the maximum possible number of dm points
@@ -223,6 +243,24 @@ PetscErrorCode RatelAdapterExtractBoundaryDOFs(DM dm, const char *label_name, Pe
     // Filter dm point for local ownership
     PetscCall(DMPlexGetPointGlobal(dm, p, &global_offset, NULL));
     if (global_offset < 0) continue;
+
+    // Check if this point is clamped in Ratel (exclude it from coupling)
+    PetscBool is_clamped = PETSC_FALSE;
+    if (ratel) {
+      for (PetscInt f = 0; f < RATEL_MAX_FIELDS; f++) {
+        for (PetscInt j = 0; j < ratel->bc_clamp_count[f]; j++) {
+          PetscInt val_clamp;
+          PetscCall(DMLabelGetValue(label, p, &val_clamp));
+          if (val_clamp == ratel->bc_clamp_faces[f][j]) {
+            is_clamped = PETSC_TRUE;
+            break;
+          }
+        }
+        if (is_clamped) break;
+      }
+    }
+    
+    if (is_clamped) continue;
 
     *n_dofs += dof / dim; 
     local_dm_points[dmpoint_local_count++] = p;
