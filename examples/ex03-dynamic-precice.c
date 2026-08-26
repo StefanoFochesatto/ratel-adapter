@@ -1,4 +1,5 @@
-#include <petsc.h>#include <ratel.h>
+#include <petsc.h>
+#include <ratel.h>
 #include <stddef.h>
 #include <ratel-adapter/petsc-debug.h> // my petsc debugging utilities for me and my stupidty
 #include <ratel-adapter/ratel-adapter.h>
@@ -36,15 +37,16 @@ static PetscErrorCode ApplyTractionI2Function(TS ts, PetscReal t, Vec U, Vec U_t
 // Pre-step callback for preCICE coupling
 static PetscErrorCode PreStepAdapter(TS ts) {
   AdapterCtx *ctx;
-  PetscReal time, dt, precice_dt;
-  PetscInt step;
-  PetscBool saved;
+  PetscReal dt, precice_dt;
+  PetscBool requires_checkpoint;
  
   PetscFunctionBeginUser;
   PetscCall(TSGetApplicationContext(ts, &ctx));
-  PetscCall(TSGetTime(ts, &time));
   PetscCall(TSGetTimeStep(ts, &dt));
-  PetscCall(TSGetStepNumber(ts, &step));
+
+  PetscReal unorm;
+  PetscCall(VecNorm(ctx->U, NORM_2, &unorm));
+  PetscCall(PetscPrintf(PETSC_COMM_WORLD, ">>> ENTERING PRE-STEP | U Norm: %g <<<\n", (double)unorm));
  
   // Get timestep size from preCICE
   PetscCall(RatelAdapterGetMaxTimeStepSize(ctx->adapter, &precice_dt));
@@ -59,8 +61,14 @@ static PetscErrorCode PreStepAdapter(TS ts) {
   PetscCall(VecNorm(ctx->F, NORM_2, &fnorm));
   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "DEBUG: Read Force from preCICE. L2 Norm = %g\n", (double)fnorm));
 
-  // Save checkpoint if required (implicit coupling)
-  PetscCall(RatelAdapterSaveCheckpointIfRequired(ctx->adapter, ctx->U, ctx->V, time, step, &saved));
+  // We must call this so preCICE knows we are aware of the checkpointing requirement
+  // Even if we rely on PETSc's internal TSRollBack for the actual state management.
+  PetscCall(RatelAdapterRequiresWritingCheckpoint(ctx->adapter, &requires_checkpoint));
+  if (requires_checkpoint) {
+    PetscCall(PetscPrintf(PETSC_COMM_WORLD, "DEBUG: Checkpoint required by preCICE. Updating Delta Reference.\n"));
+    PetscCall(RatelAdapterUpdateDeltaReference(ctx->adapter, ctx->U));
+  }
+
   PetscFunctionReturn(PETSC_SUCCESS);
 }
 
@@ -82,37 +90,48 @@ static PetscErrorCode PostStepAdapter(TS ts) {
   PetscCall(TSGetTimeStep(ts, &dt));
   PetscCall(TSGetStepNumber(ts, &step));
 
+  PetscCall(PetscPrintf(PETSC_COMM_WORLD, ">>> ENTERING POST-STEP (Step %D) <<<\n", step));
+
   // Write coupling data (displacements) and advance preCICE
   PetscCall(RatelAdapterAdvance(ctx->adapter, ctx->U, dt, &precice_dt));
 
-  // Debug export of the solution to CGNS for visualization
-  //PetscCall(PetscDebugSaveSolutionCGNS(dm, ctx->U, time + dt, step + 1, "mesh_debug"));
-
   // Check if we need to reload checkpoint
-  PetscCall(RatelAdapterReloadCheckpointIfRequired(ctx->adapter, ctx->U, ctx->V, &time, &step, &reloaded));
+  PetscCall(RatelAdapterRequiresReadingCheckpoint(ctx->adapter, &reloaded));
   if (reloaded) {
+    PetscBool requires_checkpoint;
+    PetscCall(PetscPrintf(PETSC_COMM_WORLD, "DEBUG: preCICE requires reload. Triggering TSRollBack.\n"));
     // Tell TS that the step failed and it must roll back its internal state
     PetscCall(TSRollBack(ts));
     // Tell TS that the step was rejected so it retries
     PetscCall(TSSetConvergedReason(ts, TS_CONVERGED_ITERATING));
 
+    // Since PreStep is skipped during retries, we must prepare the retry state here
+    PetscCall(RatelAdapterGetMaxTimeStepSize(ctx->adapter, &precice_dt));
+    dt = PetscMin(dt, precice_dt);
+    PetscCall(TSSetTimeStep(ts, dt));
+
+    // Read new coupling data (forces) for the retry
+    PetscCall(RatelAdapterReadData(ctx->adapter, dt, ctx->F));
     
-    // PetscReal fnorm;
-    // PetscCall(VecNorm(ctx->F, NORM_2, &fnorm));
-    // PetscCall(PetscPrintf(PETSC_COMM_WORLD, "DEBUG: Read Force from preCICE (Rollback Retry). L2 Norm = %g\n", (double)fnorm));
+    PetscReal fnorm;
+    PetscCall(VecNorm(ctx->F, NORM_2, &fnorm));
+    PetscCall(PetscPrintf(PETSC_COMM_WORLD, "DEBUG: Read Force (Retry). L2 Norm = %g\n", (double)fnorm));
+
+    // Acknowledge checkpoint requirement for preCICE state machine
+    PetscCall(RatelAdapterRequiresWritingCheckpoint(ctx->adapter, &requires_checkpoint));
   }
 
-     // Check if coupling continues
-     PetscCall(RatelAdapterIsCouplingOngoing(ctx->adapter, &ongoing));
-     if (!ongoing) {
-       PetscCall(TSSetConvergedReason(ts, TS_CONVERGED_USER));
-     } else {
-       // If coupling is ongoing, reset the converged reason to iterating so TSSolve continues
-       PetscCall(TSSetConvergedReason(ts, TS_CONVERGED_ITERATING));
-     }
+  // Check if coupling continues
+  PetscCall(RatelAdapterIsCouplingOngoing(ctx->adapter, &ongoing));
+  if (!ongoing) {
+    PetscCall(TSSetConvergedReason(ts, TS_CONVERGED_USER));
+  } else {
+    // If coupling is ongoing, reset the converged reason to iterating so TSSolve continues
+    PetscCall(TSSetConvergedReason(ts, TS_CONVERGED_ITERATING));
+  }
 
-     PetscFunctionReturn(PETSC_SUCCESS);
-   }
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
 
 
 

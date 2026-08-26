@@ -161,8 +161,6 @@ PetscErrorCode RatelAdapterDestroy(RatelAdapter *adapter);
  * 3. Write initial data if required
  * 4. Call precicec_initialize()
  *
- * Equivalent to deal.II's Adapter::initialize().
- *
  * @param[in,out] adapter Adapter context
  * @param[in] dm DMPlex mesh with coordinates (reference only, not copied)
  * @param[in] solution Initial solution vector (for initial data write)
@@ -187,7 +185,7 @@ PetscErrorCode RatelAdapterInitialize(RatelAdapter adapter, DM dm, Vec solution)
  * and stores it in the provided vector. Assumes consistent nodal
  * forces (no integration required).
  *
- * Equivalent to deal.II's Adapter::read_data().
+ * 
  *
  * @param[in] adapter Adapter context
  * @param[in] relative_read_time Time interpolation factor:
@@ -211,7 +209,7 @@ PetscErrorCode RatelAdapterReadData(RatelAdapter adapter, PetscReal relative_rea
  * preCICE, and advances the coupling. Returns the timestep size
  * suggested by preCICE.
  *
- * Equivalent to deal.II's Adapter::advance().
+ * 
  *
  * @param[in] adapter Adapter context
  * @param[in] solution Solution vector containing displacements
@@ -238,69 +236,43 @@ PetscErrorCode RatelAdapterAdvance(RatelAdapter adapter, Vec solution, PetscReal
  * ============================================================================ */
 
 /**
- * @brief Save current state if checkpointing is required
+ * @brief Check if a checkpoint should be written
  *
- * For implicit coupling schemes, this saves the solution state
- * at the beginning of a timestep so it can be restored if the
- * coupling does not converge.
- *
- * Equivalent to deal.II's Adapter::save_current_state_if_required().
- *
- * @param[in,out] adapter Adapter context
- * @param[in] solution Current solution vector to save
- * @param[in] velocity Current velocity vector to save (optional, can be NULL)
- * @param[in] time Current simulation time
- * @param[in] step Current timestep number
- * @param[out] saved PETSC_TRUE if a checkpoint was created
- *
+ * @param[in] adapter Adapter context
+ * @param[out] requires PETSC_TRUE if a checkpoint is required
  * @return PetscErrorCode
- *
- * Example:
- * @code
- * PetscBool saved;
- * RatelAdapterSaveCheckpointIfRequired(adapter, U, V, time, step, &saved);
- * @endcode
  *
  * @ingroup RatelAdapter
  */
-PetscErrorCode RatelAdapterSaveCheckpointIfRequired(RatelAdapter adapter, Vec solution,
-                                                    Vec velocity,
-                                                    PetscReal time, PetscInt step,
-                                                    PetscBool *saved);
+PetscErrorCode RatelAdapterRequiresWritingCheckpoint(RatelAdapter adapter,
+                                                      PetscBool *requires);
 
 /**
- * @brief Restore state from checkpoint if required
+ * @brief Check if a checkpoint should be read
  *
- * If preCICE requires a checkpoint reload (implicit coupling did not
- * converge), this restores the solution and time to their saved values.
- *
- * Equivalent to deal.II's Adapter::reload_old_state_if_required().
- *
- * @param[in,out] adapter Adapter context
- * @param[out] solution Solution vector to restore into
- * @param[out] velocity Velocity vector to restore into (optional, can be NULL)
- * @param[out] time Time value to restore
- * @param[out] step Timestep number to restore
- * @param[out] reloaded PETSC_TRUE if state was restored
- *
+ * @param[in] adapter Adapter context
+ * @param[out] requires PETSC_TRUE if a checkpoint reload is required
  * @return PetscErrorCode
- *
- * Example:
- * @code
- * PetscBool reloaded;
- * RatelAdapterReloadCheckpointIfRequired(adapter, U, V, &time, &step, &reloaded);
- * if (reloaded) {
- *     TSSetTime(ts, time);  // Reset PETSc TS time
- *     continue;             // Retry timestep
- * }
- * @endcode
  *
  * @ingroup RatelAdapter
  */
-PetscErrorCode RatelAdapterReloadCheckpointIfRequired(RatelAdapter adapter, Vec solution,
-                                                      Vec velocity,
-                                                      PetscReal *time, PetscInt *step,
-                                                      PetscBool *reloaded);
+PetscErrorCode RatelAdapterRequiresReadingCheckpoint(RatelAdapter adapter,
+                                                      PetscBool *requires);
+
+/**
+ * @brief Update the reference solution for delta calculations
+ *
+ * This function should be called at the start of every time window
+ * (when RatelAdapterRequiresWritingCheckpoint returns true) to
+ * set the reference state for DisplacementDelta.
+ *
+ * @param[in,out] adapter Adapter context
+ * @param[in] solution Current solution vector (start-of-window state)
+ * @return PetscErrorCode
+ *
+ * @ingroup RatelAdapter
+ */
+PetscErrorCode RatelAdapterUpdateDeltaReference(RatelAdapter adapter, Vec solution);
 
 /* ============================================================================
  * Query Functions

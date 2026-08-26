@@ -1,0 +1,2 @@
+fenicsprecice~=2.0
+numpy<2,>1

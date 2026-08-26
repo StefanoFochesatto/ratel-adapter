@@ -26,14 +26,9 @@ struct _p_RatelAdapter {
   PetscReal *read_buffer;
   PetscSection section; // local section for indexing into vectors
 
-  // Checkpointing  for rollback and initial condition writing (will get rid of some of these tsrollback does this internally)
-  Vec checkpoint_solution;
-  Vec checkpoint_V;
+  // Data tracking (for DisplacementDelta calculation)
   Vec old_solution;
   Vec delta_U;
-  PetscReal checkpoint_time;
-  PetscInt checkpoint_step;
-  PetscBool has_checkpoint;
 
   // MPI and Ratel info for logging and preCICE calls
   PetscReal current_time;
@@ -111,7 +106,6 @@ PetscErrorCode RatelAdapterCreate(RatelAdapterParameters *params, MPI_Comm comm,
 
   a->is_initialized = PETSC_FALSE;
   a->is_finalized = PETSC_FALSE;
-  a->has_checkpoint = PETSC_FALSE;
 
   // Get MPI info
   PetscCallMPI(MPI_Comm_rank(comm, &a->rank));
@@ -159,13 +153,7 @@ PetscErrorCode RatelAdapterDestroy(RatelAdapter *adapter) {
   PetscCall(PetscFree(a->write_buffer));
   PetscCall(PetscFree(a->read_buffer));
 
-  // Free vectors 
-  if (a->checkpoint_solution) {
-    PetscCall(VecDestroy(&a->checkpoint_solution));
-  }
-  if (a->checkpoint_V) {
-    PetscCall(VecDestroy(&a->checkpoint_V));
-  }
+  // Free vectors
   if (a->old_solution) {
     PetscCall(VecDestroy(&a->old_solution));
   }
@@ -200,12 +188,11 @@ PetscErrorCode RatelAdapterInitialize(RatelAdapter adapter, DM dm,
 
   adapter->dm = dm;
 
-  // Get dm dimension and check against configured dimension  
   PetscCall(DMGetDimension(dm, &adapter->dim));
   if (adapter->dim != adapter->params.dim) {
-    SETERRQ2(adapter->comm, PETSC_ERR_ARG_INCOMP,
-             "DM dimension %D does not match configured dimension %D",
-             adapter->dim, adapter->params.dim);
+    SETERRQ(adapter->comm, PETSC_ERR_ARG_INCOMP,
+            "DM dimension %D does not match configured dimension %D",
+            adapter->dim, adapter->params.dim);
   }
 
   // Get section for DOF layout
@@ -232,9 +219,6 @@ PetscErrorCode RatelAdapterInitialize(RatelAdapter adapter, DM dm,
                   "Found %D interface vertices on rank %d (after filtering clamped nodes)", n_vertices_petsc,
                   adapter->rank);
 
-// PetscCall(PetscDebugExportInterfacePoints(adapter->comm, adapter->n_interface_vertices, adapter->dim, adapter->vertex_coords, "interface_points_debug"));
-// PetscCall(PetscDebugPrintMapping(adapter->comm, adapter->n_interface_vertices, adapter->dim, adapter->petsc_indices, adapter->vertex_coords)); <- This is a very nice debug function 
-
   // Allocate vertex IDs and buffers
   if (adapter->n_interface_vertices > 0) {
     PetscCall(PetscMalloc1(adapter->n_interface_vertices, &adapter->precice_vertex_ids));
@@ -253,10 +237,13 @@ PetscErrorCode RatelAdapterInitialize(RatelAdapter adapter, DM dm,
   }
 
 
-  // Create tracking vectors as LOCAL vectors 
-  PetscCall(DMCreateLocalVector(dm, &adapter->delta_U));
-  PetscCall(DMCreateLocalVector(dm, &adapter->old_solution));
-  PetscCall(VecCopy(adapter->delta_U, adapter->old_solution)); // Initialize to 0
+  // Create tracking vectors as LOCAL vectors if needed
+  if (adapter->params.is_delta) {
+    PetscCall(DMCreateLocalVector(dm, &adapter->delta_U));
+    PetscCall(DMCreateLocalVector(dm, &adapter->old_solution));
+    // Initialize old_solution with the current solution (ICs)
+    PetscCall(DMGlobalToLocal(dm, solution, INSERT_VALUES, adapter->old_solution));
+  }
 
   // Write initial data if required
   PetscBool requires_init = PETSC_FALSE;
@@ -303,7 +290,7 @@ PetscErrorCode RatelAdapterInitialize(RatelAdapter adapter, DM dm,
 
 
 
-  // At the moment, since we use linear elements and our interface is soley defined on mesh vertices
+  // At the moment, since we use linear elements and our interface is solely defined on mesh vertices
   // we can get away with returning global vec which we substract from the I2 function. 
   // When we do dofs/quadrature points, this will have to be refactored
   PetscErrorCode RatelAdapterReadData(RatelAdapter adapter,
@@ -338,8 +325,6 @@ PetscErrorCode RatelAdapterInitialize(RatelAdapter adapter, DM dm,
   PetscCall(VecZeroEntries(boundary_data));
   PetscCall(DMLocalToGlobal(adapter->dm, local_data, ADD_VALUES, boundary_data));
   PetscCall(DMRestoreLocalVector(adapter->dm, &local_data));
-
-  PetscCall(PetscDebugVerifyZeroes(adapter->dm, boundary_data, adapter->params.boundary_label_name, adapter->params.boundary_label_value));
 
   PetscFunctionReturn(0);
   }
@@ -386,7 +371,7 @@ PetscErrorCode RatelAdapterInitialize(RatelAdapter adapter, DM dm,
     PetscCall(DMRestoreLocalVector(adapter->dm, &local_sol));
   }
 
-  /* Advance preCICE */
+  // Advance preCICE
   precicec_advance(dt);
   *precice_dt = precicec_getMaxTimeStepSize();
 
@@ -395,98 +380,46 @@ PetscErrorCode RatelAdapterInitialize(RatelAdapter adapter, DM dm,
   PetscFunctionReturn(0);
   }
 
-  PetscErrorCode RatelAdapterSaveCheckpointIfRequired(RatelAdapter adapter,
-                                                    Vec solution,
-                                                    Vec velocity,
-                                                    PetscReal time,
-                                                    PetscInt step,
-                                                    PetscBool *saved) {
+  PetscErrorCode RatelAdapterRequiresWritingCheckpoint(RatelAdapter adapter,
+                                                       PetscBool *requires) {
   PetscFunctionBeginUser;
 
-  *saved = PETSC_FALSE;
+  *requires = PETSC_FALSE;
 
   if (!adapter || !adapter->is_initialized) {
     PetscFunctionReturn(0);
   }
 
-  if (precicec_requiresWritingCheckpoint()) {
-    /* Create checkpoint vectors (as LOCAL vectors) if needed */
-    if (!adapter->checkpoint_solution) {
-      PetscCall(DMCreateLocalVector(adapter->dm, &adapter->checkpoint_solution));
-    }
-    if (velocity && !adapter->checkpoint_V) {
-      PetscCall(DMCreateLocalVector(adapter->dm, &adapter->checkpoint_V));
-    }
-
-    /* Save solution (scatter from global to checkpoint) */
-    PetscCall(DMGlobalToLocal(adapter->dm, solution, INSERT_VALUES, adapter->checkpoint_solution));
-    if (velocity) {
-      PetscCall(DMGlobalToLocal(adapter->dm, velocity, INSERT_VALUES, adapter->checkpoint_V));
-    }
-
-    adapter->checkpoint_time = time;
-    adapter->checkpoint_step = step;
-    adapter->has_checkpoint = PETSC_TRUE;
-
-    // Update old_solution for delta calculation for the upcoming window
-    // This only happens when precicec_requiresWritingCheckpoint() is true,
-    // which is at the start of every time window.
-    if (adapter->params.is_delta) {
-        PetscCall(VecCopy(adapter->checkpoint_solution, adapter->old_solution));
-    }
-
-    *saved = PETSC_TRUE;
-
-    RatelAdapterLog(adapter, RATEL_LOG_LEVEL_DEBUG,
-                    "Saved checkpoint at time %g, step %D", time, step);
-  }
+  *requires = precicec_requiresWritingCheckpoint() ? PETSC_TRUE : PETSC_FALSE;
 
   PetscFunctionReturn(0);
   }
 
-  PetscErrorCode RatelAdapterReloadCheckpointIfRequired(RatelAdapter adapter,
-                                                      Vec solution,
-                                                      Vec velocity,
-                                                      PetscReal *time,
-                                                      PetscInt *step,
-                                                      PetscBool *reloaded) {
+  PetscErrorCode RatelAdapterRequiresReadingCheckpoint(RatelAdapter adapter,
+                                                       PetscBool *requires) {
   PetscFunctionBeginUser;
 
-  *reloaded = PETSC_FALSE;
+  *requires = PETSC_FALSE;
 
   if (!adapter || !adapter->is_initialized) {
     PetscFunctionReturn(0);
   }
 
-  if (precicec_requiresReadingCheckpoint()) {
-    if (!adapter->has_checkpoint) {
-      SETERRQ(adapter->comm, PETSC_ERR_ARG_WRONGSTATE,
-              "No checkpoint available to reload");
-    }
+  *requires = precicec_requiresReadingCheckpoint() ? PETSC_TRUE : PETSC_FALSE;
 
-    /* Restore solution and velocity (scatter from local checkpoint to global) */
-    PetscCall(DMLocalToGlobal(adapter->dm, adapter->checkpoint_solution, INSERT_VALUES, solution));
-    if (velocity && adapter->checkpoint_V) {
-      PetscCall(DMLocalToGlobal(adapter->dm, adapter->checkpoint_V, INSERT_VALUES, velocity));
-    }
+  PetscFunctionReturn(0);
+  }
 
-    *time = adapter->checkpoint_time;
-    *step = adapter->checkpoint_step;
+  PetscErrorCode RatelAdapterUpdateDeltaReference(RatelAdapter adapter, Vec solution) {
+  PetscFunctionBeginUser;
 
-    *reloaded = PETSC_TRUE;
+  if (!adapter || !adapter->is_initialized) {
+    SETERRQ(PETSC_COMM_SELF, PETSC_ERR_ARG_WRONGSTATE,
+            "Adapter not initialized");
+  }
 
-    RatelAdapterLog(adapter, RATEL_LOG_LEVEL_DEBUG,
-                    "Restored checkpoint to time %g, step %D", *time, *step);
-  } else if (precicec_isTimeWindowComplete()) {
-    // If the window is complete, update old_solution for the NEXT window
-    if (adapter->params.is_delta) {
-        // Here we need the current solution in a local vector 
-        Vec local_sol;
-        PetscCall(DMGetLocalVector(adapter->dm, &local_sol));
-        PetscCall(DMGlobalToLocal(adapter->dm, solution, INSERT_VALUES, local_sol));
-        PetscCall(VecCopy(local_sol, adapter->old_solution));
-        PetscCall(DMRestoreLocalVector(adapter->dm, &local_sol));
-    }
+  if (adapter->params.is_delta) {
+    PetscCall(DMGlobalToLocal(adapter->dm, solution, INSERT_VALUES, adapter->old_solution));
   }
 
   PetscFunctionReturn(0);

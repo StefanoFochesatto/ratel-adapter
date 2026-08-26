@@ -123,6 +123,11 @@ int main(int argc, char **argv) {
   }
   PetscCall(RatelLogStagePopDebug(ratel, "Ratel Setup"));
 
+  Vec       U_checkpoint;
+  PetscReal time_checkpoint;
+  PetscInt  step_checkpoint;
+  PetscCall(VecDuplicate(U, &U_checkpoint));
+
   PetscBool ongoing = PETSC_TRUE;
   while (ongoing) {
     /* Get timestep size from preCICE */
@@ -135,9 +140,14 @@ int main(int argc, char **argv) {
     /* TODO: Apply F as Neumann BC to Ratel */
 
     /* Save checkpoint if required (implicit coupling) */
-    PetscBool saved;
-    PetscCall(
-        RatelAdapterSaveCheckpointIfRequired(adapter, U, NULL, time, step, &saved));
+    PetscBool requires_checkpoint;
+    PetscCall(RatelAdapterRequiresWritingCheckpoint(adapter, &requires_checkpoint));
+    if (requires_checkpoint) {
+      PetscCall(VecCopy(U, U_checkpoint));
+      time_checkpoint = time;
+      step_checkpoint = step;
+      PetscCall(RatelAdapterUpdateDeltaReference(adapter, U));
+    }
 
     /* Solve one timestep */
     PetscCall(TSSetTimeStep(ts, dt));
@@ -149,9 +159,12 @@ int main(int argc, char **argv) {
 
     /* Check if we need to reload checkpoint */
     PetscBool reloaded;
-    PetscCall(RatelAdapterReloadCheckpointIfRequired(adapter, U, NULL, &time, &step,
-                                                     &reloaded));
+    PetscCall(RatelAdapterRequiresReadingCheckpoint(adapter, &reloaded));
     if (reloaded) {
+      /* Restore state */
+      PetscCall(VecCopy(U_checkpoint, U));
+      time = time_checkpoint;
+      step = step_checkpoint;
       /* Reset TS time */
       PetscCall(TSSetTime(ts, time));
       continue; /* Retry timestep */
@@ -167,6 +180,7 @@ int main(int argc, char **argv) {
   }
 
   /* Finalize */
+  PetscCall(VecDestroy(&U_checkpoint));
   PetscCall(RatelAdapterDestroy(&adapter));
   PetscCall(VecDestroy(&U));
   PetscCall(VecDestroy(&F));

@@ -1,0 +1,19 @@
+# Ratel configuration for 3D Elastic Tube
+# Material: E=0.3MPa, nu=0.3, rho=1200kg/m^3
+
+order: 1
+q_extra: 1
+
+dm_plex:
+  filename: tube.msh
+
+model: elasticity-linear
+E: 3.0e5
+nu: 0.3
+rho: 1200.0
+
+bc:
+  clamp: 1 # Physical Group ID for "Clamped" (both ends)
+  traction: 2 # Physical Group ID for "Coupling" (inner surface)
+  traction_2:
+    vectors: 0,0,0
